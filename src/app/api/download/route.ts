@@ -3,6 +3,7 @@ import axios from 'axios';
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
+import { canAutoUseMedia, withMediaRights } from '@/lib/mediaRights';
 
 function contentDispositionFilename(filename: string) {
   return filename.replace(/["\r\n]/g, '_');
@@ -19,7 +20,7 @@ function extensionFromContentType(contentType: string, fallback: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { items } = await request.json(); // Array of items to download
+    const { items, customName } = await request.json(); // Array of items to download
 
     if (!items || !Array.isArray(items)) {
       return NextResponse.json({ error: 'Items array is required' }, { status: 400 });
@@ -34,8 +35,17 @@ export async function POST(request: NextRequest) {
     await fs.ensureDir(downloadDir);
 
     const results = [];
-    for (const item of items) {
+    for (const rawItem of items) {
       try {
+        const item = withMediaRights(rawItem);
+        if (!canAutoUseMedia(item)) {
+          results.push({
+            id: item.id,
+            status: 'error',
+            error: 'This asset does not have a reusable license signal. Open the source page and verify rights before downloading.',
+          });
+          continue;
+        }
         let downloadUrl = item.downloadUrl;
 
         // Special handling for Internet Archive to find the actual media file
@@ -58,7 +68,7 @@ export async function POST(request: NextRequest) {
         }
 
         const extension = item.type === 'video' ? '.mp4' : '.jpg';
-        const cleanBase = item.title
+        const cleanBase = (typeof customName === 'string' && customName.trim() ? customName : item.title)
           .toLowerCase()
           .replace(/[^a-z0-9]/g, '_')
           .substring(0, 50);
@@ -160,8 +170,8 @@ export async function POST(request: NextRequest) {
 
         results.push({ id: item.id, status: 'success', filename: finalFilename, path: filePath });
       } catch (err: any) {
-        console.error(`Failed to download ${item.id}:`, err.message);
-        results.push({ id: item.id, status: 'error', error: err.message });
+        console.error(`Failed to download ${rawItem?.id || 'asset'}:`, err.message);
+        results.push({ id: rawItem?.id || 'asset', status: 'error', error: err.message });
       }
     }
 
